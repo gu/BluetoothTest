@@ -1,8 +1,8 @@
 package gumanchu.bluetoothtest;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.util.UUID;
 
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
@@ -10,25 +10,32 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
 import android.content.Intent;
 import android.os.Bundle;
-import android.widget.TextView;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.KeyEvent;
 
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 
 public class MainActivity extends Activity {
-    TextView out;
+
+    private static final String TAG = "MainActivity";
+
+    int currentKey, previousKey;
+    ControlRunnable controller;
+    VideoRunnable video;
+
+    int bytes, size;
+    byte[] data;
+
     private static final int REQUEST_ENABLE_BT = 1;
-    private BluetoothAdapter btAdapter = null;
-    private BluetoothSocket btSocket = null;
-    private OutputStream outStream = null;
+    private BluetoothAdapter mBluetoothAdapter = null;
+    private BluetoothSocket mBluetoothSocket = null;
+    private DataOutputStream mOutStream = null;
+    private DataInputStream mInStream = null;
 
-    // Well known SPP UUID
-    private static final UUID MY_UUID =
-            UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
-
-    // Insert your server's MAC address
-    static String address = "98:58:8A:04:40:7D";
 
     /** Called when the activity is first created. */
     @Override
@@ -36,94 +43,74 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        out = (TextView) findViewById(R.id.out);
-
-        out.append("\n...In onCreate()...");
-
-        btAdapter = BluetoothAdapter.getDefaultAdapter();
+        mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         CheckBTState();
     }
 
     @Override
     public void onStart() {
         super.onStart();
-        out.append("\n...In onStart()...");
     }
 
     @Override
     public void onResume() {
         super.onResume();
 
-        out.append("\n...In onResume...\n...Attempting client connect...");
+        BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(Constants.SERVER_ADDRESS_BLUETOOTH);
 
-        // Set up a pointer to the remote node using it's address.
-        BluetoothDevice device = btAdapter.getRemoteDevice(address);
-
-        // Two things are needed to make a connection:
-        //   A MAC address, which we got above.
-        //   A Service ID or UUID.  In this case we are using the
-        //     UUID for SPP.
         try {
-            btSocket = device.createRfcommSocketToServiceRecord(MY_UUID);
+            mBluetoothSocket = device.createRfcommSocketToServiceRecord(Constants.DEVICE_UUID);
         } catch (IOException e) {
             AlertBox("Fatal Error", "In onResume() and socket create failed: " + e.getMessage() + ".");
         }
 
-        // Discovery is resource intensive.  Make sure it isn't going on
-        // when you attempt to connect and pass your message.
-        btAdapter.cancelDiscovery();
+        mBluetoothAdapter.cancelDiscovery();
 
-        // Establish the connection.  This will block until it connects.
         try {
-            btSocket.connect();
-            out.append("\n...Connection established and data link opened...");
+            mBluetoothSocket.connect();
         } catch (IOException e) {
             try {
-                btSocket.close();
+                mBluetoothSocket.close();
             } catch (IOException e2) {
                 AlertBox("Fatal Error", "In onResume() and unable to close socket during connection failure" + e2.getMessage() + ".");
             }
         }
 
-        // Create a data stream so we can talk to server.
-        out.append("\n...Sending message to server...");
-
         try {
-            outStream = btSocket.getOutputStream();
+            mOutStream = new DataOutputStream(mBluetoothSocket.getOutputStream());
+            mInStream = new DataInputStream(mBluetoothSocket.getInputStream());
         } catch (IOException e) {
             AlertBox("Fatal Error", "In onResume() and output stream creation failed:" + e.getMessage() + ".");
         }
 
-        String message = "Hi mum1!!!!!";
-        byte[] msgBuffer = message.getBytes();
-        try {
-            outStream.write(msgBuffer);
-        } catch (IOException e) {
-            String msg = "In onResume() and an exception occurred during write: " + e.getMessage();
-            if (address.equals("00:00:00:00:00:00"))
-                msg = msg + ".\n\nUpdate your server address from 00:00:00:00:00:00 to the correct address on line 37 in the java code";
-            msg = msg +  ".\n\nCheck that the SPP UUID: " + MY_UUID.toString() + " exists on server.\n\n";
 
-            AlertBox("Fatal Error", msg);
-        }
+        currentKey = 0;
+        previousKey = 1;
+        controller = new ControlRunnable();
+//        Thread c = new Thread(controller);
+//        c.start();
+
+        video = new VideoRunnable();
+//        Thread v = new Thread(video);
+//        v.start();
+
+
     }
 
     @Override
     public void onPause() {
         super.onPause();
 
-        out.append("\n...In onPause()...");
-
-        if (outStream != null) {
+        if (mOutStream != null) {
             try {
-                outStream.flush();
+                mOutStream.flush();
             } catch (IOException e) {
                 AlertBox("Fatal Error", "In onPause() and failed to flush output stream: " + e.getMessage() + ".");
             }
         }
 
         try     {
-            btSocket.close();
+            mBluetoothSocket.close();
         } catch (IOException e2) {
             AlertBox("Fatal Error", "In onPause() and failed to close socket." + e2.getMessage() + ".");
         }
@@ -132,25 +119,102 @@ public class MainActivity extends Activity {
     @Override
     public void onStop() {
         super.onStop();
-        out.append("\n...In onStop()...");
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        out.append("\n...In onDestroy()...");
     }
+
+
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+            case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+            case KeyEvent.KEYCODE_ESCAPE:
+                currentKey = keyCode;
+                return true;
+            default:
+                return super.onKeyDown(keyCode, event);
+        }
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+            case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+            case KeyEvent.KEYCODE_ESCAPE:
+                currentKey = 0;
+                return true;
+            default:
+                return super.onKeyUp(keyCode, event);
+        }
+
+    }
+
+    public class ControlRunnable implements Runnable {
+        @Override
+        public void run() {
+
+            Looper.prepare();
+            Handler controlHandle = new Handler();
+
+            try {
+                while (mBluetoothSocket.isConnected() && currentKey != KeyEvent.KEYCODE_ESCAPE) {
+                    if (currentKey != previousKey) {
+                        mOutStream.writeInt(currentKey);
+                        mOutStream.flush();
+                    }
+                    previousKey = currentKey;
+                    controlHandle.postDelayed(controller, 100);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public class VideoRunnable implements Runnable {
+        @Override
+        public void run() {
+            try {
+                while (mBluetoothSocket.isConnected()) {
+                    bytes = 0;
+
+                    size = mInStream.readInt();
+                    data = new byte[size];
+
+                    for (int i = 0; i < size; i += bytes) {
+                        bytes = mInStream.read(data, i, size - i);
+                    }
+
+                    Log.i(TAG, "BYTES: " + bytes);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+
 
     private void CheckBTState() {
         // Check for Bluetooth support and then check to make sure it is turned on
 
         // Emulator doesn't support Bluetooth and will return null
-        if(btAdapter==null) {
+        if(mBluetoothAdapter ==null) {
             AlertBox("Fatal Error", "Bluetooth Not supported. Aborting.");
         } else {
-            if (btAdapter.isEnabled()) {
-                out.append("\n...Bluetooth is enabled...");
-            } else {
+            if (!mBluetoothAdapter.isEnabled()) {
                 //Prompt user to turn on Bluetooth
                 Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
                 startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
